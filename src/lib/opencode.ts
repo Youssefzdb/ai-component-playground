@@ -3,7 +3,12 @@ import confirmedModels from "./confirmed-models.json";
 export const OPENCODE_BASE = "https://superagent-2b61d5b9.base44.app/functions";
 export const DEFAULT_MODEL = "beam-free";
 
-export type ModelInfo = { id: string; name: string; reasoning?: boolean; latency?: number | undefined };
+export type ModelInfo = {
+  id: string;
+  name: string;
+  reasoning?: boolean;
+  latency?: number | undefined;
+};
 export type ModelReport = { models: ModelInfo[]; testedAt: string; tested: number };
 const MODEL_CACHE = "vibe-confirmed-models-v1";
 
@@ -28,52 +33,109 @@ You have no filesystem, workspace, or external tools. Report implementation outc
 export function normalizeModelReport(data: unknown, catalog: ModelInfo[] = []): ModelReport {
   if (!data || typeof data !== "object") throw new Error("نتيجة فحص النماذج غير صالحة");
   const d = data as Record<string, unknown>;
-  if (!Array.isArray(d["results"]) || typeof d["tested_at"] !== "string" || !Number.isFinite(Date.parse(d["tested_at"]))) {
+  if (
+    !Array.isArray(d["results"]) ||
+    typeof d["tested_at"] !== "string" ||
+    !Number.isFinite(Date.parse(d["tested_at"]))
+  ) {
     throw new Error("لم يُرجع الفحص نتائج مؤكدة");
   }
   const models: ModelInfo[] = [];
   for (const row of d["results"]) {
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
-    if (r["ok"] !== true || typeof r["model"] !== "string" || !r["model"] || typeof r["content"] !== "string" || !r["content"].trim() || r["error"]) continue;
+    if (
+      r["ok"] !== true ||
+      typeof r["model"] !== "string" ||
+      !r["model"] ||
+      typeof r["content"] !== "string" ||
+      !r["content"].trim() ||
+      r["error"]
+    )
+      continue;
     if (models.some((m) => m.id === r["model"])) continue;
     const meta = catalog.find((m) => m.id === r["model"]);
-    models.push({ id: r["model"], name: meta?.name ?? r["model"], latency: typeof r["latency_secs"] === "number" ? r["latency_secs"] : undefined });
+    models.push({
+      id: r["model"],
+      name: meta?.name ?? r["model"],
+      latency: typeof r["latency_secs"] === "number" ? r["latency_secs"] : undefined,
+    });
   }
   models.sort((a, b) => Number(b.id === DEFAULT_MODEL) - Number(a.id === DEFAULT_MODEL));
-  return { models, testedAt: d["tested_at"], tested: typeof d["tested"] === "number" ? d["tested"] : d["results"].length };
+  return {
+    models,
+    testedAt: d["tested_at"],
+    tested: typeof d["tested"] === "number" ? d["tested"] : d["results"].length,
+  };
 }
 
 export function loadConfirmedModels(): ModelReport {
   try {
     const raw = localStorage.getItem(MODEL_CACHE);
     if (raw) return normalizeModelReport(JSON.parse(raw));
-  } catch { /* Storage may be blocked; the bundled snapshot is still verified. */ }
+  } catch {
+    /* Storage may be blocked; the bundled snapshot is still verified. */
+  }
   return normalizeModelReport(confirmedModels);
 }
 
 export async function fetchModels(signal?: AbortSignal): Promise<ModelReport> {
   const [testResponse, catalog] = await Promise.all([
-    fetch(`${OPENCODE_BASE}/opencodeTestModels`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: signal ?? null }),
-    fetch(`${OPENCODE_BASE}/opencodeFreeModels`, { signal: signal ?? null }).then(async (r) => r["ok"] ? (await r.json()).models as ModelInfo[] : []).catch(() => [] as ModelInfo[]),
+    fetch(`${OPENCODE_BASE}/opencodeTestModels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: signal ?? null,
+    }),
+    fetch(`${OPENCODE_BASE}/opencodeFreeModels`, { signal: signal ?? null })
+      .then(async (r) => (r["ok"] ? ((await r.json()).models as ModelInfo[]) : []))
+      .catch(() => [] as ModelInfo[]),
   ]);
   if (!testResponse.ok) throw new Error("تعذر فحص النماذج؛ يمكنك استخدام آخر نتيجة مؤكدة.");
   const data: unknown = await testResponse.json();
   const report = normalizeModelReport(data, Array.isArray(catalog) ? catalog : []);
-  try { localStorage.setItem(MODEL_CACHE, JSON.stringify(data)); } catch { /* Keep verified results in memory. */ }
+  try {
+    localStorage.setItem(MODEL_CACHE, JSON.stringify(data));
+  } catch {
+    /* Keep verified results in memory. */
+  }
   return report;
 }
 
-export type ChatResult = { content: string; reasoning?: string; usage?: { total_tokens?: number }; model?: string };
+export type ChatResult = {
+  content: string;
+  reasoning?: string;
+  usage?: { total_tokens?: number };
+  model?: string;
+};
 
 export type HistoryItem = { role: "user" | "assistant"; content: string };
 // Server-side memory (opencodeSessions) is used when it works; if the service rejects it,
 // we fall back to sending the full history ourselves for the rest of the page session.
 let sessionsBroken = false;
 
-export async function sendChat(opts: { prompt: string; session: string; model: string; history: HistoryItem[]; signal?: AbortSignal; system?: string; stateless?: boolean }): Promise<ChatResult> {
-  const withSession = { prompt: opts.prompt, session: opts.session, model: opts.model, system: opts.system ?? SYSTEM_PROMPT, reasoning_effort: "medium" };
-  const withHistory = { messages: [...opts.history, { role: "user", content: opts.prompt }], model: opts.model, system: opts.system ?? SYSTEM_PROMPT, reasoning_effort: "medium" };
+export async function sendChat(opts: {
+  prompt: string;
+  session: string;
+  model: string;
+  history: HistoryItem[];
+  signal?: AbortSignal;
+  system?: string;
+  stateless?: boolean;
+}): Promise<ChatResult> {
+  const withSession = {
+    prompt: opts.prompt,
+    session: opts.session,
+    model: opts.model,
+    system: opts.system ?? SYSTEM_PROMPT,
+    reasoning_effort: "medium",
+  };
+  const withHistory = {
+    messages: [...opts.history, { role: "user", content: opts.prompt }],
+    model: opts.model,
+    system: opts.system ?? SYSTEM_PROMPT,
+    reasoning_effort: "medium",
+  };
   let body: Record<string, unknown> = sessionsBroken || opts.stateless ? withHistory : withSession;
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`${OPENCODE_BASE}/opencodeChat`, {
@@ -83,12 +145,19 @@ export async function sendChat(opts: { prompt: string; session: string; model: s
       signal: opts.signal ?? null,
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && !data.error && typeof data.content === "string" && data.content.trim()) return data as ChatResult;
+    if (res.ok && !data.error && typeof data.content === "string" && data.content.trim())
+      return data as ChatResult;
     if (res.ok) continue; // empty answer: ask again
     if (!sessionsBroken && /private|access/i.test(String(data.message ?? ""))) {
-      sessionsBroken = true; body = withHistory; attempt--; continue;
+      sessionsBroken = true;
+      body = withHistory;
+      attempt--;
+      continue;
     }
-    if (res.status === 429 || res.status >= 500) { await new Promise((r) => setTimeout(r, 2000 * (attempt + 1))); continue; }
+    if (res.status === 429 || res.status >= 500) {
+      await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      continue;
+    }
     throw new Error(data.error || data.message || `خطأ ${res.status}`);
   }
   throw new Error("تعذر الحصول على رد من النموذج، حاول مرة أخرى.");
