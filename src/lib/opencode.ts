@@ -22,18 +22,28 @@ export async function fetchModels(): Promise<ModelInfo[]> {
 
 export type ChatResult = { content: string; reasoning?: string; usage?: { total_tokens?: number }; model?: string };
 
-export async function sendChat(opts: { prompt: string; session: string; model: string; signal?: AbortSignal }): Promise<ChatResult> {
-  const body = { prompt: opts.prompt, session: opts.session, model: opts.model, system: SYSTEM_PROMPT };
+export type HistoryItem = { role: "user" | "assistant"; content: string };
+// Server-side memory (opencodeSessions) is used when it works; if the service rejects it,
+// we fall back to sending the full history ourselves for the rest of the page session.
+let sessionsBroken = false;
+
+export async function sendChat(opts: { prompt: string; session: string; model: string; history: HistoryItem[]; signal?: AbortSignal }): Promise<ChatResult> {
+  const withSession = { prompt: opts.prompt, session: opts.session, model: opts.model, system: SYSTEM_PROMPT };
+  const withHistory = { messages: [...opts.history, { role: "user", content: opts.prompt }], model: opts.model, system: SYSTEM_PROMPT };
+  let body: Record<string, unknown> = sessionsBroken ? withHistory : withSession;
   let res502 = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`${OPENCODE_BASE}/opencodeChat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(attempt > 0 && res502 ? { ...body, model: DEFAULT_MODEL } : body),
+      body: JSON.stringify(res502 ? { ...body, model: DEFAULT_MODEL } : body),
       signal: opts.signal,
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.content !== undefined) return data as ChatResult;
+    if (!sessionsBroken && /private|access/i.test(String(data.message ?? ""))) {
+      sessionsBroken = true; body = withHistory; attempt--; continue;
+    }
     if (res.status === 502) { res502 = true; continue; }
     if (res.status === 429 || res.status >= 500) { await new Promise((r) => setTimeout(r, 2000 * (attempt + 1))); continue; }
     throw new Error(data.error || data.message || `خطأ ${res.status}`);

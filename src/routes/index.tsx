@@ -95,7 +95,14 @@ function Studio() {
       const fullPrompt = current
         ? `${prompt}\n\n(Current App.tsx is version v${current.n}. Return the full updated file.)`
         : prompt;
-      const res = await sendChat({ prompt: fullPrompt, session, model, signal: ctrl.signal });
+      const history = messages
+        .filter((m) => m.role === "user" || (!m.error && m.text))
+        .map((m) => {
+          const v = m.version ? versions.find((x) => x.n === m.version) : undefined;
+          return { role: m.role, content: v ? `${m.text}\n\n\`\`\`tsx\n${v.code}\n\`\`\`` : m.text };
+        })
+        .slice(-20);
+      const res = await sendChat({ prompt: fullPrompt, session, model, history, signal: ctrl.signal });
       const thinkMs = performance.now() - t0;
       const { text: prose, code } = extractCode(res.content || "");
       patch(aid, (m) => ({ ...m, text: prose, reasoning: res.reasoning, thinkMs }));
