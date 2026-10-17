@@ -5,6 +5,8 @@ export type ModelInfo = { id: string; name: string; reasoning?: boolean };
 
 export const SYSTEM_PROMPT = `You are an expert UI engineer inside a v0-style generator. You build beautiful, production-quality React components with Tailwind CSS and lucide-react icons.
 
+You have NO tools, NO file system and NO workspace access. Never try to inspect files; answer directly in a single message.
+
 Rules:
 - First write 1-3 short sentences (in the user's language) describing what you built or changed.
 - Then output EXACTLY ONE fenced code block with language tag tsx containing the COMPLETE file App.tsx.
@@ -28,8 +30,8 @@ export type HistoryItem = { role: "user" | "assistant"; content: string };
 let sessionsBroken = false;
 
 export async function sendChat(opts: { prompt: string; session: string; model: string; history: HistoryItem[]; signal?: AbortSignal }): Promise<ChatResult> {
-  const withSession = { prompt: opts.prompt, session: opts.session, model: opts.model, system: SYSTEM_PROMPT };
-  const withHistory = { messages: [...opts.history, { role: "user", content: opts.prompt }], model: opts.model, system: SYSTEM_PROMPT };
+  const withSession = { prompt: opts.prompt, session: opts.session, model: opts.model, system: SYSTEM_PROMPT, reasoning_effort: "medium" };
+  const withHistory = { messages: [...opts.history, { role: "user", content: opts.prompt }], model: opts.model, system: SYSTEM_PROMPT, reasoning_effort: "medium" };
   let body: Record<string, unknown> = sessionsBroken ? withHistory : withSession;
   let res502 = false;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -40,7 +42,8 @@ export async function sendChat(opts: { prompt: string; session: string; model: s
       signal: opts.signal,
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data.content !== undefined) return data as ChatResult;
+    if (res.ok && typeof data.content === "string" && data.content.trim()) return data as ChatResult;
+    if (res.ok) continue; // empty answer: ask again
     if (!sessionsBroken && /private|access/i.test(String(data.message ?? ""))) {
       sessionsBroken = true; body = withHistory; attempt--; continue;
     }
