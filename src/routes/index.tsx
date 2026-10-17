@@ -33,7 +33,7 @@ type StepStatus = "running" | "done" | "error";
 type Step = { id: string; kind: "think" | "file" | "render"; label: string; detail?: string; status: StepStatus };
 type Msg = {
   id: string; role: "user" | "assistant"; text: string;
-  reasoning?: string; steps?: Step[]; version?: number; thinkMs?: number; error?: string;
+  reasoning?: string | undefined; steps?: Step[] | undefined; version?: number | undefined; thinkMs?: number | undefined; error?: string | undefined;
 };
 type Version = { n: number; code: string; prompt: string };
 type Device = "desktop" | "tablet" | "mobile";
@@ -364,7 +364,7 @@ function StepIcon({ status }: { status: StepStatus }) {
   return <span className="grid size-3.5 place-items-center rounded-full bg-primary text-primary-foreground"><Check className="size-2.5" strokeWidth={3} /></span>;
 }
 
-function ThoughtBox({ reasoning, running, ms }: { reasoning?: string; running: boolean; ms?: number }) {
+function ThoughtBox({ reasoning, running, ms }: { reasoning?: string | undefined; running: boolean; ms?: number | undefined }) {
   const [elapsed, setElapsed] = useState(0);
   const [open, setOpen] = useState(false);
   useEffect(() => {

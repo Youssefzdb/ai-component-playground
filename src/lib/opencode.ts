@@ -39,7 +39,7 @@ export async function sendChat(opts: { prompt: string; session: string; model: s
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(res502 ? { ...body, model: DEFAULT_MODEL } : body),
-      signal: opts.signal,
+      signal: opts.signal ?? null,
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && typeof data.content === "string" && data.content.trim()) return data as ChatResult;
@@ -67,5 +67,5 @@ export function extractCode(content: string): { text: string; code: string | nul
   const m = content.match(/```(?:tsx|jsx|typescript|ts|javascript|js|react)?\s*\n([\s\S]*?)```/);
   if (!m) return { text: content.trim(), code: null };
   const text = content.replace(m[0], "").trim();
-  return { text, code: m[1].trim() };
+  return { text, code: (m[1] ?? "").trim() };
 }
