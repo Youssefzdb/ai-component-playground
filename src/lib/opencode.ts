@@ -24,6 +24,7 @@ export type ChatResult = { content: string; reasoning?: string; usage?: { total_
 
 export async function sendChat(opts: { prompt: string; session: string; model: string; signal?: AbortSignal }): Promise<ChatResult> {
   const body = { prompt: opts.prompt, session: opts.session, model: opts.model, system: SYSTEM_PROMPT };
+  let res502 = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`${OPENCODE_BASE}/opencodeChat`, {
       method: "POST",
@@ -39,7 +40,6 @@ export async function sendChat(opts: { prompt: string; session: string; model: s
   }
   throw new Error("تعذر الحصول على رد من النموذج، حاول مرة أخرى.");
 }
-let res502 = false;
 
 export async function clearSession(session: string) {
   await fetch(`${OPENCODE_BASE}/opencodeSessions`, {
