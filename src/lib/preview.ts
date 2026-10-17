@@ -8,8 +8,9 @@ const IMPORT_MAP = {
 };
 
 /** Builds a self-contained HTML document that compiles and renders App.tsx in the browser. */
-export function buildPreviewHtml(code: string): string {
+export function buildPreviewHtml(code: string, storage: Record<string, string> = {}): string {
   const encoded = JSON.stringify(code).replace(/<\/script/gi, "<\\/script");
+  const stored = JSON.stringify(storage).replace(/<\/script/gi, "<\\/script");
   return `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
@@ -17,14 +18,17 @@ export function buildPreviewHtml(code: string): string {
 <style>body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif}#__err{display:none;position:fixed;inset:0;padding:24px;background:#1a0b0b;color:#fca5a5;font:13px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow:auto}</style>
 </head><body><div id="root"></div><div id="__err"></div>
 <script>
-function __showErr(e){var el=document.getElementById('__err');el.style.display='block';el.textContent='⚠ '+(e&&e.message||e);}
+var __data=${stored};
+var __storage={getItem:function(k){return Object.prototype.hasOwnProperty.call(__data,String(k))?__data[String(k)]:null},setItem:function(k,v){__data[String(k)]=String(v);parent.postMessage({type:'vibe-storage',values:__data},'*')},removeItem:function(k){delete __data[String(k)];parent.postMessage({type:'vibe-storage',values:__data},'*')},clear:function(){__data={};parent.postMessage({type:'vibe-storage',values:__data},'*')},key:function(i){return Object.keys(__data)[i]||null},get length(){return Object.keys(__data).length}};
+Object.defineProperty(window,'localStorage',{value:__storage});
+function __showErr(e){var message=String(e&&e.message||e);var el=document.getElementById('__err');el.style.display='block';el.textContent='⚠ '+message;parent.postMessage({type:'vibe-preview-error',message:message},'*');}
 window.addEventListener('error',function(e){__showErr(e.error||e.message)});
 window.addEventListener('unhandledrejection',function(e){__showErr(e.reason)});
 try{
   var src=${encoded};
   var out=Babel.transform(src,{filename:'App.tsx',presets:[['react',{runtime:'automatic'}],'typescript']}).code;
   var url=URL.createObjectURL(new Blob([out],{type:'text/javascript'}));
-  var boot="import App from '"+url+"';import {createRoot} from 'react-dom/client';import {jsx} from 'react/jsx-runtime';createRoot(document.getElementById('root')).render(jsx(App,{}));";
+  var boot="import App from '"+url+"';import {createRoot} from 'react-dom/client';import {useEffect} from 'react';import {jsx} from 'react/jsx-runtime';function Preview(){useEffect(()=>{parent.postMessage({type:'vibe-preview-ready'},'*')},[]);return jsx(App,{})}createRoot(document.getElementById('root')).render(jsx(Preview,{}));";
   var s=document.createElement('script');s.type='module';s.textContent=boot;document.body.appendChild(s);
 }catch(e){__showErr(e)}
 </script></body></html>`;

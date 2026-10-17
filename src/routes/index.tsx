@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { MessageResponse } from "@/components/ai-elements/message";
+import { Tool, ToolHeader, ToolContent } from "@/components/ai-elements/tool";
+import { Button } from "@/components/ui/button";
 import JSZip from "jszip";
 import {
   ArrowUp, Brain, Check, ChevronDown, Code2, Copy, Download, Eye, FileCode2, Loader2,
@@ -12,7 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { DEFAULT_MODEL, clearSession, extractCode, fetchModels, sendChat, type ModelInfo } from "@/lib/opencode";
+import { DEFAULT_MODEL, clearSession, extractCode, fetchModels, loadConfirmedModels, type ModelInfo } from "@/lib/opencode";
+import { AGENTS, generateWithAgents, type AgentEvent } from "@/lib/agents";
 import { buildPreviewHtml, buildProjectFiles } from "@/lib/preview";
 
 export const Route = createFileRoute("/")({
@@ -29,11 +32,12 @@ export const Route = createFileRoute("/")({
   component: Studio,
 });
 
-type StepStatus = "running" | "done" | "error";
+type StepStatus = "pending" | "running" | "done" | "error";
 type Step = { id: string; kind: "think" | "file" | "render"; label: string; detail?: string; status: StepStatus };
 type Msg = {
   id: string; role: "user" | "assistant"; text: string;
   reasoning?: string | undefined; steps?: Step[] | undefined; version?: number | undefined; thinkMs?: number | undefined; error?: string | undefined;
+  agents?: AgentEvent[] | undefined;
 };
 type Version = { n: number; code: string; prompt: string };
 type Device = "desktop" | "tablet" | "mobile";
@@ -57,21 +61,68 @@ function Studio() {
   const [busy, setBusy] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [checking, setChecking] = useState(false);
+  const [checkedAt, setCheckedAt] = useState("");
+  const [modelError, setModelError] = useState("");
+  const modelAbortRef = useRef<AbortController | null>(null);
   const [view, setView] = useState<"preview" | "code">("preview");
   const [device, setDevice] = useState<Device>("desktop");
   const [reloadKey, setReloadKey] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewMsgRef = useRef<string | null>(null);
+  const storageRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
-    fetchModels().then(setModels).catch(() => setModels([{ id: DEFAULT_MODEL, name: "Beam Free" }]));
+    const report = loadConfirmedModels();
+    setModels(report.models); setCheckedAt(report.testedAt);
+    setModel(report.models.find((m) => m.id === DEFAULT_MODEL)?.id ?? report.models[0]?.id ?? "");
     taRef.current?.focus();
+    return () => { modelAbortRef.current?.abort(); abortRef.current?.abort(); };
   }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const current = versions.find((v) => v.n === activeV) ?? null;
-  const html = useMemo(() => (current ? buildPreviewHtml(current.code) : ""), [current]);
+  const html = useMemo(() => (current ? buildPreviewHtml(current.code, storageRef.current) : ""), [current, reloadKey]);
+
+  useEffect(() => {
+    function receive(event: MessageEvent) {
+      if (event.source !== iframeRef.current?.contentWindow || !event.data || typeof event.data !== "object") return;
+      if (event.data.type === "vibe-storage") {
+        const values = event.data.values;
+        if (!values || typeof values !== "object" || Array.isArray(values)) return;
+        const entries = Object.entries(values);
+        if (entries.length > 500 || entries.some(([k, v]) => k.length > 200 || typeof v !== "string") || JSON.stringify(values).length > 2000000) return;
+        storageRef.current = Object.fromEntries(entries) as Record<string, string>;
+      }
+      const id = previewMsgRef.current;
+      if (!id) return;
+      if (event.data.type === "vibe-preview-ready") {
+        setMessages((ms) => ms.map((m) => m.id === id ? { ...m, steps: m.steps?.map((s) => s.id === "render" ? { ...s, status: "done", detail: "تم تشغيل React" } : s) } : m));
+      }
+      if (event.data.type === "vibe-preview-error" && typeof event.data.message === "string") {
+        setMessages((ms) => ms.map((m) => m.id === id ? { ...m, error: event.data.message.slice(0, 1500), steps: m.steps?.map((s) => s.id === "render" ? { ...s, status: "error" } : s) } : m));
+      }
+    }
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, []);
+
+  async function refreshModels() {
+    if (checking || busy) return;
+    const ctrl = new AbortController(); modelAbortRef.current = ctrl;
+    setChecking(true); setModelError("");
+    try {
+      const report = await fetchModels(ctrl.signal);
+      setModels(report.models); setCheckedAt(report.testedAt);
+      setModel((old) => report.models.some((m) => m.id === old) ? old : report.models[0]?.id ?? "");
+      if (!report.models.length) setModelError("لا توجد نماذج اجتازت الفحص؛ أعد الفحص لاحقًا.");
+    } catch (error) {
+      if (!ctrl.signal.aborted) setModelError(error instanceof Error ? error.message : "تعذّر الفحص");
+    } finally { setChecking(false); modelAbortRef.current = null; }
+  }
 
   const patch = (id: string, fn: (m: Msg) => Msg) => setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   const setStep = (id: string, stepId: string, s: Partial<Step>) =>
@@ -79,14 +130,14 @@ function Studio() {
 
   async function send(text?: string) {
     const prompt = (text ?? input).trim();
-    if (!prompt || busy) return;
+    if (!prompt || busy || checking || !models.some((m) => m.id === model)) return;
     setInput("");
     setBusy(true);
     const aid = uid();
     setMessages((ms) => [
       ...ms,
       { id: uid(), role: "user", text: prompt },
-      { id: aid, role: "assistant", text: "", steps: [{ id: "think", kind: "think", label: "تحليل الطلب والتخطيط", status: "running" }] },
+      { id: aid, role: "assistant", text: "", agents: [], steps: [{ id: "think", kind: "think", label: "تنفيذ الوكلاء", status: "running" }] },
     ]);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -102,7 +153,9 @@ function Studio() {
           return { role: m.role, content: v ? `${m.text}\n\n\`\`\`tsx\n${v.code}\n\`\`\`` : m.text };
         })
         .slice(-20);
-      const res = await sendChat({ prompt: fullPrompt, session, model, history, signal: ctrl.signal });
+      const res = await generateWithAgents({ prompt: fullPrompt, session, model, history, currentCode: current?.code, signal: ctrl.signal,
+        onEvent: (event) => patch(aid, (m) => ({ ...m, agents: [...(m.agents ?? []).filter((a) => a.id !== event.id), event] })),
+      });
       const thinkMs = performance.now() - t0;
       const { text: prose, code } = extractCode(res.content || "");
       patch(aid, (m) => ({ ...m, text: prose, reasoning: res.reasoning, thinkMs }));
@@ -113,22 +166,21 @@ function Studio() {
         patch(aid, (m) => ({
           ...m, version: n,
           steps: [...(m.steps ?? []),
-            { id: "file", kind: "file", label: current ? "تحديث App.tsx" : "إنشاء App.tsx", detail: `${lines} سطر`, status: "running" },
+            { id: "file", kind: "file", label: current ? "تحديث App.tsx" : "إنشاء App.tsx", detail: `${lines} سطر`, status: "done" },
             { id: "render", kind: "render", label: "تصيير المعاينة الحية", status: "running" }],
         }));
-        await new Promise((r) => setTimeout(r, 350));
-        setStep(aid, "file", { status: "done" });
+        previewMsgRef.current = aid;
         setVersions((vs) => [...vs, { n, code, prompt }]);
         setActiveV(n);
         setView("preview");
-        await new Promise((r) => setTimeout(r, 400));
-        setStep(aid, "render", { status: "done", detail: `v${n}` });
       }
     } catch (e) {
       const aborted = (e as Error).name === "AbortError";
+      ctrl.abort();
       patch(aid, (m) => ({
         ...m, error: aborted ? "تم إيقاف التوليد." : (e as Error).message,
         steps: m.steps?.map((s) => (s.status === "running" ? { ...s, status: "error" } : s)),
+        agents: m.agents?.map((a) => a.status === "running" ? { ...a, status: "error", error: "توقف التنفيذ" } : a),
       }));
     } finally {
       setBusy(false);
@@ -139,6 +191,7 @@ function Studio() {
 
   async function resetChat() {
     abortRef.current?.abort();
+    previewMsgRef.current = null; storageRef.current = {};
     await clearSession(session);
     setSession(newSession());
     setMessages([]); setVersions([]); setActiveV(null); setInput("");
@@ -207,7 +260,7 @@ function Studio() {
           <div className="flex h-full flex-col bg-sidebar">
             <div className="flex h-10 items-center justify-between border-b border-border px-3 text-xs text-muted-foreground">
               <span>المحادثة</span>
-              <button onClick={resetChat} className="flex items-center gap-1 hover:text-foreground"><SquarePen className="size-3.5" /> جديدة</button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={resetChat} className="gap-1"><SquarePen className="size-3.5" /> جديدة</Button>
             </div>
             <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3" dir="rtl">
               {messages.length === 0 && <EmptyChat onPick={(s) => send(s)} />}
@@ -221,6 +274,13 @@ function Studio() {
               <div ref={endRef} />
             </div>
             <div className="border-t border-border p-3" dir="rtl">
+              <div className="mb-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                <span>{checking ? "جارٍ فحص النماذج…" : `${models.length} نماذج مؤكدة · ${checkedAt ? new Date(checkedAt).toLocaleString("ar", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}`}</span>
+                <Button variant="ghost" size="icon-sm" aria-label="إعادة فحص النماذج" title="إعادة فحص النماذج" onClick={refreshModels} disabled={checking || busy}>
+                  <RotateCcw className={cn("size-3.5", checking && "animate-spin")} />
+                </Button>
+              </div>
+              {modelError && <p role="alert" className="mb-2 text-xs text-destructive">{modelError}</p>}
               <div className="rounded-xl border border-input bg-card focus-within:ring-1 focus-within:ring-ring">
                 <textarea ref={taRef} value={input} dir="auto" rows={3}
                   onChange={(e) => setInput(e.target.value)}
@@ -228,7 +288,7 @@ function Studio() {
                   placeholder={current ? "اطلب تعديلاً على التصميم…" : "صف الواجهة التي تريد بناءها…"}
                   className="block w-full resize-none bg-transparent px-3 pt-3 text-sm outline-none placeholder:text-muted-foreground" />
                 <div className="flex items-center justify-between gap-2 p-2">
-                  <Select value={model} onValueChange={setModel}>
+                  <Select value={model} onValueChange={setModel} disabled={busy || checking || !models.length}>
                     <SelectTrigger className="h-7 w-auto max-w-[60%] border-none bg-muted text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent className="max-h-72">
                       {models.map((md) => <SelectItem key={md.id} value={md.id} className="text-xs">{md.name || md.id}</SelectItem>)}
@@ -238,7 +298,7 @@ function Studio() {
                     <button onClick={() => abortRef.current?.abort()} aria-label="إيقاف"
                       className="grid size-8 shrink-0 place-items-center rounded-lg bg-foreground text-background"><Square className="size-3.5 fill-current" /></button>
                   ) : (
-                    <button onClick={() => send()} disabled={!input.trim()} aria-label="إرسال"
+                    <button onClick={() => send()} disabled={!input.trim() || checking || !model} aria-label="إرسال"
                       className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground disabled:opacity-30"><ArrowUp className="size-4" /></button>
                   )}
                 </div>
@@ -275,7 +335,7 @@ function Studio() {
                 <div className="flex h-full items-start justify-center overflow-auto p-4">
                   <div className={cn("h-full overflow-hidden rounded-lg border border-border bg-card shadow-2xl transition-all duration-300",
                     device === "desktop" ? "w-full" : device === "tablet" ? "w-[768px]" : "w-[390px]")}>
-                    <iframe key={`${current.n}-${reloadKey}`} title="preview" srcDoc={html}
+                    <iframe ref={iframeRef} key={`${current.n}-${reloadKey}`} title="preview" srcDoc={html}
                       sandbox="allow-scripts allow-forms allow-modals allow-popups" className="h-full w-full border-0 bg-white" />
                   </div>
                 </div>
@@ -321,9 +381,21 @@ function AssistantMsg({ m, activeV, onOpenVersion }: { m: Msg; activeV: number |
   return (
     <div className="space-y-2.5">
       <ThoughtBox reasoning={m.reasoning} running={thinking} ms={m.thinkMs} />
+      {m.agents && AGENTS.map((agent) => {
+        const execution = m.agents?.find((a) => a.id === agent.id);
+        const state = !execution ? "input-streaming" : execution.status === "running" ? "input-available" : execution.status === "done" ? "output-available" : "output-error";
+        return <Tool key={agent.id} defaultOpen={false} className="mb-2 bg-card">
+          <ToolHeader type="dynamic-tool" toolName={agent.id} title={agent.label} state={state} className="[&_span]:text-[10px]" />
+          <ToolContent className="space-y-2 p-3 text-xs">
+            <p className="text-muted-foreground">{agent.task}{execution?.durationMs ? ` · ${(execution.durationMs / 1000).toFixed(1)}ث` : ""}</p>
+            {execution?.output && <div dir="auto" className="max-h-64 overflow-auto"><MessageResponse>{execution.output}</MessageResponse></div>}
+            {execution?.error && <p className="text-destructive">{execution.error}</p>}
+          </ToolContent>
+        </Tool>;
+      })}
       {m.text && (
         <div dir="auto" className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed text-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:my-1">
-          <ReactMarkdown>{m.text}</ReactMarkdown>
+          <MessageResponse>{m.text}</MessageResponse>
         </div>
       )}
       {m.steps && m.steps.length > 1 && (
@@ -339,7 +411,7 @@ function AssistantMsg({ m, activeV, onOpenVersion }: { m: Msg; activeV: number |
         </div>
       )}
       {m.version && (
-        <button onClick={() => onOpenVersion(m.version!)}
+        <button onClick={() => { if (m.version) onOpenVersion(m.version); }}
           className={cn("flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-right transition",
             activeV === m.version ? "border-primary/60 bg-primary/10" : "border-border bg-card hover:border-primary/40")}>
           <span className="grid size-8 place-items-center rounded-md bg-primary/15 font-mono text-xs font-bold text-primary">v{m.version}</span>
@@ -359,6 +431,7 @@ function AssistantMsg({ m, activeV, onOpenVersion }: { m: Msg; activeV: number |
 }
 
 function StepIcon({ status }: { status: StepStatus }) {
+  if (status === "pending") return <Square className="size-3.5 text-muted-foreground" />;
   if (status === "running") return <Loader2 className="size-3.5 animate-spin text-primary" />;
   if (status === "error") return <TriangleAlert className="size-3.5 text-destructive" />;
   return <span className="grid size-3.5 place-items-center rounded-full bg-primary text-primary-foreground"><Check className="size-2.5" strokeWidth={3} /></span>;

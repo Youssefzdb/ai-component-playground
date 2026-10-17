@@ -1,0 +1,4 @@
+- [ ] Filter model selection through live opencodeTestModels results and allow refresh.
+- [ ] Execute design, data, media, and frontend agents with visible real statuses.
+- [ ] Support safe localStorage in sandbox and verify interactive generation.
+- [ ] Add tests and verify the complete flow.
