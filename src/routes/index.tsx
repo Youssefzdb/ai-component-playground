@@ -142,6 +142,8 @@ function Studio() {
   const current = versions.find((v) => v.n === activeV) ?? null;
   const html = useMemo(
     () => (current ? buildPreviewHtml(current.code, storageRef.current) : ""),
+    // Reload intentionally captures the latest bridged storage without rebuilding on each write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [current, reloadKey],
   );
 
@@ -164,6 +166,11 @@ function Studio() {
         )
           return;
         storageRef.current = Object.fromEntries(entries) as Record<string, string>;
+        try {
+          localStorage.setItem(`vibe-mock:${session}`, JSON.stringify(storageRef.current));
+        } catch {
+          // Keep working in memory when the browser blocks storage.
+        }
       }
       const id = previewMsgRef.current;
       if (!id) return;
@@ -197,7 +204,7 @@ function Studio() {
     }
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, []);
+  }, [session]);
 
   async function refreshModels() {
     if (checking || busy) return;
