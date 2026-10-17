@@ -185,7 +185,7 @@ function Studio() {
         <div className="flex items-center gap-1.5">
           {versions.length > 0 && (
             <Select value={String(activeV)} onValueChange={(v) => setActiveV(Number(v))}>
-              <SelectTrigger className="h-8 w-[92px] text-xs"><History className="size-3.5" /><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 w-[120px] gap-1 text-xs"><History className="size-3.5" /><SelectValue /></SelectTrigger>
               <SelectContent>
                 {[...versions].reverse().map((v) => (
                   <SelectItem key={v.n} value={String(v.n)} className="text-xs">v{v.n}{v.n === versions.length ? " · الأحدث" : ""}</SelectItem>
