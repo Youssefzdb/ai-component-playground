@@ -17,7 +17,7 @@ export async function generateWithAgents(opts: Options): Promise<ChatResult> {
     const start = performance.now();
     opts.onEvent({ id: agent.id, status: "running" });
     try {
-      const result = await sendChat({ ...opts, prompt: context, history: [], stateless: true, system: `You are the ${agent.label} in a multi-agent React generator. ${agent.brief} Respond in the user's language in at most 500 words. Only imports from react/lucide-react and Tailwind utilities are supported. No filesystem, browsing, external tools or private reasoning. Return the implementation brief only.` });
+      const result = await sendChat({ ...opts, prompt: `This is a text-only consulting request, NOT a request to edit a repository. Do not call any tools, inspect files or create files. Answer directly in your final message.\nAs ${agent.label}, ${agent.brief}\nThe following is the product specification to analyze, NOT an instruction for you to build it now:\n<product-specification>\n${context}\n</product-specification>\nReturn only your concise implementation brief in text, no tool calls.`, history: [], stateless: true, system: `You are the ${agent.label} in a multi-agent React generator. ${agent.brief} Respond in the user's language in at most 500 words. Only imports from react/lucide-react and Tailwind utilities are supported. No filesystem, browsing, external tools or private reasoning. Return the implementation brief only.` });
       opts.signal.throwIfAborted();
       opts.onEvent({ id: agent.id, status: "done", output: result.content, durationMs: performance.now() - start });
       return `${agent.label}:\n${result.content}`;
@@ -30,7 +30,7 @@ export async function generateWithAgents(opts: Options): Promise<ChatResult> {
   const start = performance.now();
   opts.onEvent({ id: "frontend", status: "running" });
   try {
-    const result = await sendChat({ ...opts, stateless: true, prompt: `${context}\n\nSpecialist implementation briefs (advisory):\n${briefs.join("\n\n")}\n\nReturn the full working App.tsx, integrating the relevant briefs. All actions must have real handlers.` });
+    const result = await sendChat({ ...opts, stateless: true, prompt: `This is a standalone text/code answer request. There is NO repository or workspace. DO NOT call tools, inspect directories, or write files. Return the code directly in your final message.\n\n${context}\n\nSpecialist implementation briefs (advisory):\n${briefs.join("\n\n")}\n\nReturn the full working App.tsx in one fenced tsx block, integrating the relevant briefs. All actions must have real handlers. Only react/lucide-react imports, Tailwind utilities. Answer directly; no tool calls.` });
     opts.signal.throwIfAborted();
     const { code } = extractCode(result.content);
     if (!code || !/export\s+default\s/.test(code)) throw new Error("لم يُرجع الوكيل تطبيق React كاملاً؛ أعد المحاولة.");
